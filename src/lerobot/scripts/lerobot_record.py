@@ -100,6 +100,13 @@ from lerobot.cameras.reachy2_camera import Reachy2CameraConfig  # noqa: F401
 from lerobot.cameras.realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.cameras.zmq import ZMQCameraConfig  # noqa: F401
 from lerobot.common.control_utils import sanity_check_dataset_robot_compatibility
+
+# Third-party plugins: ROS2 robot + Isaac Sim camera + GELLO teleop
+try:
+    import lerobot_robot_ros  # noqa: F401  registers xarm7_ros robot + ros2_image camera
+    import lerobot_teleoperator_devices  # noqa: F401  registers gello_ros + keyboard_joint teleops
+except ImportError:
+    pass
 from lerobot.configs import parser
 from lerobot.configs.dataset import DatasetRecordConfig
 from lerobot.datasets import (
