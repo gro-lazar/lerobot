@@ -525,6 +525,15 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
         listener, events = init_keyboard_listener()
 
+        # Optional ROS2 episode controller: Isaac Sim publishes to
+        # /lerobot/stop_episode  → ends current episode
+        # /lerobot/start_episode → ends reset phase, starts next episode
+        try:
+            from lerobot_robot_ros.episode_controller import start_ros2_episode_controller
+            start_ros2_episode_controller(events)
+        except ImportError:
+            pass
+
         if not cfg.dataset.streaming_encoding:
             logging.info(
                 "Streaming encoding is disabled. If you have capable hardware, consider enabling it for way faster episode saving. --dataset.streaming_encoding=true --dataset.encoder_threads=2 # --dataset.vcodec=auto. More info in the documentation: https://huggingface.co/docs/lerobot/streaming_video_encoding"
