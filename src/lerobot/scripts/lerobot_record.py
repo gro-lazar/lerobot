@@ -513,6 +513,10 @@ def record(
                 ):
                     log_say("Reset the environment", cfg.play_sounds)
 
+                    # reset simulated robots automatically
+                    if robot.name in ("unitree_g1", "mujoco_xarm7"):
+                        robot.reset()
+
                     record_loop(
                         robot=robot,
                         events=events,
