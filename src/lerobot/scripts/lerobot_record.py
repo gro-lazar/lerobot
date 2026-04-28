@@ -107,6 +107,10 @@ try:
     import lerobot_teleoperator_devices  # noqa: F401  registers gello_ros + keyboard_joint teleops
 except ImportError:
     pass
+try:
+    import mujoco_xarm  # noqa: F401  registers mujoco_xarm7 robot + gello_direct teleop
+except ImportError:
+    pass
 from lerobot.configs import parser
 from lerobot.configs.dataset import DatasetRecordConfig
 from lerobot.datasets import (

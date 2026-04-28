@@ -137,6 +137,10 @@ def replay(cfg: ReplayConfig):
 
 def main():
     register_third_party_plugins()
+    try:
+        import mujoco_xarm  # noqa: F401  registers mujoco_xarm7 robot
+    except ImportError:
+        pass
     replay()
 
 
