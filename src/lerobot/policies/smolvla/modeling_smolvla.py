@@ -247,6 +247,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         self.model = VLAFlowMatching(config, rtc_processor=self.rtc_processor)
         self._prefetch_executor: ThreadPoolExecutor | None = None
         self._prefetch_future: Future | None = None
+        self._last_action: Tensor | None = None
         self.reset()
 
     def reset(self):
@@ -254,7 +255,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         self._queues = {
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
-        # Drop any in-flight prefetch so the next episode starts clean.
+        self._last_action = None
         if getattr(self, "_prefetch_future", None) is not None:
             self._prefetch_future.cancel()
             self._prefetch_future = None
@@ -336,9 +337,11 @@ class SmolVLAPolicy(PreTrainedPolicy):
         environment. It works by managing the actions in a queue and only calling `select_actions` when the
         queue is empty.
 
-        Async prefetch: when the queue reaches half capacity, inference for the next chunk is started in
-        a background thread. By the time the queue empties the result is already available, eliminating the
-        ~150 ms stall that otherwise fires the "record loop running slower" warning every n_action_steps.
+        Async prefetch: when the last queued action is popped, inference for the next chunk is started in
+        a background thread using the current (freshest) observation. If inference is still running when
+        the queue empties on the next call, the last executed action is returned again (robot holds
+        position) rather than blocking. This avoids both the ~150 ms stall and the springback that occurs
+        when a stale observation is used to prefetch too early.
         """
 
         assert not self._rtc_enabled(), (
@@ -350,9 +353,14 @@ class SmolVLAPolicy(PreTrainedPolicy):
         self._queues = populate_queues(self._queues, batch, exclude_keys=[ACTION])
 
         if self._check_get_actions_condition():
-            # Use prefetch result if ready; fall back to inline inference.
             if self._prefetch_future is not None:
-                actions = self._prefetch_future.result()  # typically instant — prefetch ran ahead
+                if not self._prefetch_future.done():
+                    # Inference is still running — hold the last action rather than blocking.
+                    # The robot keeps its current position for one more control step.
+                    if self._last_action is not None:
+                        return self._last_action
+                    # No last action yet (episode start) — fall through to inline inference below.
+                actions = self._prefetch_future.result()
                 self._prefetch_future = None
             else:
                 actions = self._get_action_chunk(batch, noise, **kwargs)
@@ -362,14 +370,14 @@ class SmolVLAPolicy(PreTrainedPolicy):
             self._queues[ACTION].extend(actions.transpose(0, 1)[: self.config.n_action_steps])
 
         action = self._queues[ACTION].popleft()
+        self._last_action = action
 
-        # Start prefetching the next chunk when queue hits half capacity.
-        # This gives n_action_steps//2 control steps (~0.8 s at 30 Hz) for the ~150 ms inference to finish.
-        prefetch_at = max(1, self.config.n_action_steps // 2)
-        if len(self._queues[ACTION]) == prefetch_at and self._prefetch_future is None:
+        # When we pop the last queued action, kick off prefetch for the next chunk using
+        # the current (fresh) observation. Inference has ~n_action_steps control steps to
+        # complete before the queue empties again; if it isn't done in time the robot holds.
+        if len(self._queues[ACTION]) == 0 and self._prefetch_future is None:
             if self._prefetch_executor is None:
                 self._prefetch_executor = ThreadPoolExecutor(max_workers=1)
-            # Snapshot the current batch (detach tensors — we don't need grad history).
             prefetch_batch = {
                 k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in batch.items()
             }
