@@ -17,6 +17,7 @@
 import builtins
 import logging
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, Unpack
 
@@ -788,6 +789,9 @@ class PI0FastPolicy(PreTrainedPolicy):
 
         self.model.to(config.device)
 
+        self._prefetch_executor: ThreadPoolExecutor | None = None
+        self._prefetch_future: Future | None = None
+        self._last_action: Tensor | None = None
         self.reset()
 
     @classmethod
@@ -944,6 +948,10 @@ class PI0FastPolicy(PreTrainedPolicy):
         self._queues = {
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
+        self._last_action = None
+        if getattr(self, "_prefetch_future", None) is not None:
+            self._prefetch_future.cancel()
+            self._prefetch_future = None
 
     def init_rtc_processor(self):
         """Initialize RTC processor if RTC is enabled in config."""
@@ -1190,20 +1198,49 @@ class PI0FastPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
-        """Select a single action given environment observations."""
+        """Select a single action given environment observations.
+
+        Async prefetch: on the last pop, inference for the next chunk starts in a background thread
+        using the current (freshest) observation. If inference is still running when the queue empties,
+        the last executed action is returned (robot holds position) rather than blocking.
+        """
         assert not self._rtc_enabled(), (
             "RTC is not supported for select_action, use it with predict_action_chunk"
         )
 
         self.eval()
 
-        # Action queue logic for n_action_steps > 1
         if len(self._action_queue) == 0:
-            actions = self.predict_action_chunk(batch)[:, : self.config.n_action_steps]
-            # Transpose to get shape (n_action_steps, batch_size, action_dim)
+            if self._prefetch_future is not None:
+                if not self._prefetch_future.done():
+                    if self._last_action is not None:
+                        return self._last_action
+                actions = self._prefetch_future.result()
+                self._prefetch_future = None
+            else:
+                actions = self.predict_action_chunk(batch)[:, : self.config.n_action_steps]
             self._action_queue.extend(actions.transpose(0, 1))
 
-        return self._action_queue.popleft()
+        action = self._action_queue.popleft()
+        self._last_action = action
+
+        _PREFETCH_LOOKAHEAD = 0
+        if len(self._action_queue) == _PREFETCH_LOOKAHEAD and self._prefetch_future is None:
+            if self._prefetch_executor is None:
+                self._prefetch_executor = ThreadPoolExecutor(max_workers=1)
+            prefetch_batch = {
+                k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+            }
+            self._prefetch_future = self._prefetch_executor.submit(
+                lambda b: self.predict_action_chunk(b)[:, : self.config.n_action_steps],
+                prefetch_batch,
+            )
+
+        return action
+
+    def __del__(self):
+        if getattr(self, "_prefetch_executor", None) is not None:
+            self._prefetch_executor.shutdown(wait=False)
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Unpack[ActionSelectKwargs]) -> Tensor:
