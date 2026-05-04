@@ -337,11 +337,12 @@ class SmolVLAPolicy(PreTrainedPolicy):
         environment. It works by managing the actions in a queue and only calling `select_actions` when the
         queue is empty.
 
-        Async prefetch: when the last queued action is popped, inference for the next chunk is started in
-        a background thread using the current (freshest) observation. If inference is still running when
-        the queue empties on the next call, the last executed action is returned again (robot holds
-        position) rather than blocking. This avoids both the ~150 ms stall and the springback that occurs
-        when a stale observation is used to prefetch too early.
+        Async prefetch: _PREFETCH_LOOKAHEAD steps before the queue empties, inference for the next
+        chunk is kicked off in a background thread. At ~130 ms per inference and ~33 ms per step, the
+        result is ready ~2 steps before the queue actually runs dry — so no hold is needed at chunk
+        boundaries. If inference ever runs over (GPU busy, warm-up), the last action is repeated for
+        one step rather than blocking (hold fallback). Observation staleness at boundary time is
+        ~LOOKAHEAD * 33 ms ≈ 200 ms, which is negligible for absolute-position control.
         """
 
         assert not self._rtc_enabled(), (
@@ -372,10 +373,13 @@ class SmolVLAPolicy(PreTrainedPolicy):
         action = self._queues[ACTION].popleft()
         self._last_action = action
 
-        # When we pop the last queued action, kick off prefetch for the next chunk using
-        # the current (fresh) observation. Inference has ~n_action_steps control steps to
-        # complete before the queue empties again; if it isn't done in time the robot holds.
-        if len(self._queues[ACTION]) == 0 and self._prefetch_future is None:
+        # Kick off prefetch 6 steps before the queue empties so inference (~130 ms = ~4 steps)
+        # finishes before the queue runs dry — eliminating the hold and the GPU-contention
+        # stall that occurred when inference only started on the very last pop.
+        # The observation is ~200 ms stale at chunk-boundary time, which is negligible.
+        # The hold-fallback above still fires if inference runs longer than expected.
+        _PREFETCH_LOOKAHEAD = 6
+        if len(self._queues[ACTION]) == _PREFETCH_LOOKAHEAD and self._prefetch_future is None:
             if self._prefetch_executor is None:
                 self._prefetch_executor = ThreadPoolExecutor(max_workers=1)
             prefetch_batch = {
