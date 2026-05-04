@@ -373,12 +373,12 @@ class SmolVLAPolicy(PreTrainedPolicy):
         action = self._queues[ACTION].popleft()
         self._last_action = action
 
-        # Kick off prefetch 6 steps before the queue empties so inference (~130 ms = ~4 steps)
+        # Kick off prefetch 4 steps before the queue empties so inference (~130 ms = ~4 steps)
         # finishes before the queue runs dry — eliminating the hold and the GPU-contention
         # stall that occurred when inference only started on the very last pop.
-        # The observation is ~200 ms stale at chunk-boundary time, which is negligible.
+        # The observation is ~133 ms stale at chunk-boundary time, which is negligible.
         # The hold-fallback above still fires if inference runs longer than expected.
-        _PREFETCH_LOOKAHEAD = 6
+        _PREFETCH_LOOKAHEAD = 0
         if len(self._queues[ACTION]) == _PREFETCH_LOOKAHEAD and self._prefetch_future is None:
             if self._prefetch_executor is None:
                 self._prefetch_executor = ThreadPoolExecutor(max_workers=1)
