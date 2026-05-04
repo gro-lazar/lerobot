@@ -54,6 +54,7 @@ policy = SmolVLAPolicy.from_pretrained("lerobot/smolvla_base")
 
 import math
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TypedDict, Unpack
 
 import torch
@@ -165,6 +166,8 @@ class SmolVLAPolicy(PreTrainedPolicy):
         self.config = config
         self.init_rtc_processor()
         self.model = VLAFlowMatching(config, rtc_processor=self.rtc_processor)
+        self._prefetch_executor: ThreadPoolExecutor | None = None
+        self._prefetch_future: Future | None = None
         self.reset()
 
     def reset(self):
@@ -172,6 +175,10 @@ class SmolVLAPolicy(PreTrainedPolicy):
         self._queues = {
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
+        # Drop any in-flight prefetch so the next episode starts clean.
+        if getattr(self, "_prefetch_future", None) is not None:
+            self._prefetch_future.cancel()
+            self._prefetch_future = None
 
     def init_rtc_processor(self):
         """Initialize RTC processor if RTC is enabled in config."""
@@ -249,6 +256,10 @@ class SmolVLAPolicy(PreTrainedPolicy):
         This method wraps `select_actions` in order to return one action at a time for execution in the
         environment. It works by managing the actions in a queue and only calling `select_actions` when the
         queue is empty.
+
+        Async prefetch: when the queue reaches half capacity, inference for the next chunk is started in
+        a background thread. By the time the queue empties the result is already available, eliminating the
+        ~150 ms stall that otherwise fires the "record loop running slower" warning every n_action_steps.
         """
 
         assert not self._rtc_enabled(), (
@@ -260,13 +271,38 @@ class SmolVLAPolicy(PreTrainedPolicy):
         self._queues = populate_queues(self._queues, batch, exclude_keys=[ACTION])
 
         if self._check_get_actions_condition():
-            actions = self._get_action_chunk(batch, noise)
+            # Use prefetch result if ready; fall back to inline inference.
+            if self._prefetch_future is not None:
+                actions = self._prefetch_future.result()  # typically instant — prefetch ran ahead
+                self._prefetch_future = None
+            else:
+                actions = self._get_action_chunk(batch, noise, **kwargs)
 
             # `self.predict_action_chunk` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
             # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
             self._queues[ACTION].extend(actions.transpose(0, 1)[: self.config.n_action_steps])
 
-        return self._queues[ACTION].popleft()
+        action = self._queues[ACTION].popleft()
+
+        # Start prefetching the next chunk when queue hits half capacity.
+        # This gives n_action_steps//2 control steps (~0.8 s at 30 Hz) for the ~150 ms inference to finish.
+        prefetch_at = max(1, self.config.n_action_steps // 2)
+        if len(self._queues[ACTION]) == prefetch_at and self._prefetch_future is None:
+            if self._prefetch_executor is None:
+                self._prefetch_executor = ThreadPoolExecutor(max_workers=1)
+            # Snapshot the current batch (detach tensors — we don't need grad history).
+            prefetch_batch = {
+                k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+            }
+            self._prefetch_future = self._prefetch_executor.submit(
+                self._get_action_chunk, prefetch_batch, noise
+            )
+
+        return action
+
+    def __del__(self):
+        if self._prefetch_executor is not None:
+            self._prefetch_executor.shutdown(wait=False)
 
     def _check_get_actions_condition(self) -> bool:
         return len(self._queues[ACTION]) == 0
