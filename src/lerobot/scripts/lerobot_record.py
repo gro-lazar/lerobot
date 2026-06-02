@@ -538,6 +538,12 @@ def record(
                     dataset.clear_episode_buffer()
                     continue
 
+                if dataset.episode_buffer is None or dataset.episode_buffer.get("size", 0) == 0:
+                    logging.warning("Episode has 0 frames — discarding instead of saving.")
+                    events["exit_early"] = False
+                    dataset.clear_episode_buffer()
+                    continue
+
                 dataset.save_episode()
                 recorded_episodes += 1
     finally:
