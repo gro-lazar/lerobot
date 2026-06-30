@@ -729,6 +729,7 @@ def concatenate_video_files(
             stream_map[input_stream.index].time_base = input_stream.time_base
 
     # Demux + remux packets (no re-encode)
+    last_dts: dict[int, int] = {}
     for packet in input_container.demux():
         # Skip packets from un-mapped streams
         if packet.stream.index not in stream_map:
@@ -740,6 +741,16 @@ def concatenate_video_files(
 
         output_stream = stream_map[packet.stream.index]
         packet.stream = output_stream
+        # The concat demuxer can emit a small (~1-2 frame) timestamp overlap at a
+        # file boundary; nudge dts/pts forward so the muxer always sees strictly
+        # increasing dts (else mux() raises "non monotonically increasing dts").
+        idx = output_stream.index
+        if idx in last_dts and packet.dts <= last_dts[idx]:
+            shift = last_dts[idx] + 1 - packet.dts
+            packet.dts += shift
+            if packet.pts is not None:
+                packet.pts += shift
+        last_dts[idx] = packet.dts
         output_container.mux(packet)
 
     input_container.close()
