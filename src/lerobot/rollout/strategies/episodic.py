@@ -167,6 +167,14 @@ class EpisodicStrategy(RolloutStrategy):
                             # No teleop: return the robot to its startup position.
                             self._return_to_initial_position(hw=ctx.hardware, duration_s=1)
 
+                        # Reset simulated robots automatically. Mirrors the hook this
+                        # fork carries in lerobot_record.py, which 0.6.x no longer uses
+                        # for policy eval. mujoco_xarm7.reset() re-seeds free-body object
+                        # poses with per-episode randomization; without it every eval
+                        # episode replays identical object placement.
+                        if robot.name in ("unitree_g1", "mujoco_xarm7"):
+                            robot.reset()
+
                         self._reset_loop(
                             ctx=ctx,
                             robot=robot,
