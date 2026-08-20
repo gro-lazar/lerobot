@@ -345,10 +345,16 @@ def build_rollout_context(
     # x/y/theta.vel) and the policy was trained/normalized on all 9; the old .pos-only
     # filter fed a 6-dim state into a 9-dim normalizer → RuntimeError (size 6 vs 9).
     # Pure-arm robots have no .vel state keys, so this is a no-op for them.
+    # Keep every scalar observation feature the robot declares, not just .pos/.vel.
+    # Cameras are tuples and are kept unconditionally; a robot's float features ARE
+    # its state, so second-guessing them by key suffix drops real state silently.
+    # mujoco_xarm7 exposes TCP pose as tcp.x/.y/.z/.qw/.qx/.qy/.qz (include_tcp_state):
+    # none end in .pos/.vel, so the upstream filter cut observation.state from 15 to 8
+    # and every policy trained on 15 blew up in the normalizer (size 8 vs 15). This is
+    # the same failure the .vel widening above was added for (LeKiwi, 6 vs 9) --
+    # generalized instead of enumerated.
     observation_features_hw = {
-        k: v
-        for k, v in all_obs_features.items()
-        if isinstance(v, tuple) or (v is float and k.endswith((".pos", ".vel")))
+        k: v for k, v in all_obs_features.items() if isinstance(v, tuple) or v is float
     }
     # Keep both joint-position (.pos) and base-velocity (.vel) action features so
     # mobile manipulators command the base too (e.g. LeKiwi: 6 arm .pos +
