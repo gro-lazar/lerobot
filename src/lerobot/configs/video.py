@@ -185,14 +185,41 @@ class VideoEncoderConfig:
                 if encoder in available:
                     logger.info(f"Auto-selected video codec: {encoder}")
                     self.vcodec = encoder
+                    self._apply_nvenc_bframe_guard()
                     return
             logger.warning("No hardware encoder available, falling back to software encoder 'libsvtav1'")
             self.vcodec = "libsvtav1"
 
         if self.detect_available_encoders(self.vcodec):
             logger.info(f"Using video codec: {self.vcodec}")
+            self._apply_nvenc_bframe_guard()
             return
         raise ValueError(f"Unsupported video codec: {self.vcodec} with video backend {self.video_backend}")
+
+    def _apply_nvenc_bframe_guard(self) -> None:
+        """NVENC refuses to open when GOP length <= B-frames + 1.
+
+        The default ``g=2`` is tuned for libsvtav1, but ``vcodec="auto"`` picks
+        ``h264_nvenc``/``hevc_nvenc`` on any NVIDIA box. NVENC then defaults to 2-3
+        B-frames, so ``g=2`` fails avcodec_open2 with
+        "Gop Length should be greater than number of B frames + 1".
+
+        Force ``bf=0`` when the caller has not chosen a B-frame count. That is also the
+        right setting for streaming_encoding: B-frames add reorder latency. Callers who
+        explicitly set ``bf`` (or raise ``g`` above bf+1) are left untouched.
+        """
+        if not self.vcodec.endswith("_nvenc"):
+            return
+        if "bf" in self.extra_options:
+            return
+        if self.g is not None and self.g > 3:  # already large enough for NVENC's default bf
+            return
+        self.extra_options = {**self.extra_options, "bf": 0}
+        logger.info(
+            "NVENC with g=%s requires GOP > B-frames + 1; setting bf=0 (override with "
+            "--dataset.rgb_encoder.extra_options or a larger --dataset.rgb_encoder.g).",
+            self.g,
+        )
 
     def get_codec_options(
         self, encoder_threads: int | None = None, as_strings: bool = False
