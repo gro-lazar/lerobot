@@ -538,7 +538,11 @@ def record(
                     dataset.clear_episode_buffer()
                     continue
 
-                if dataset.episode_buffer is None or dataset.episode_buffer.get("size", 0) == 0:
+                # 0.6.x moved episode_buffer off LeRobotDataset onto the writer
+                # (datasets/dataset_writer.py). Reading dataset.episode_buffer raised
+                # AttributeError on the first save, so no episode ever persisted.
+                _ep_buf = getattr(getattr(dataset, "writer", None), "episode_buffer", None)
+                if _ep_buf is None or _ep_buf.get("size", 0) == 0:
                     logging.warning("Episode has 0 frames — discarding instead of saving.")
                     events["exit_early"] = False
                     dataset.clear_episode_buffer()
