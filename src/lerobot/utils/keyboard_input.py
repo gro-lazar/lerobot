@@ -423,18 +423,32 @@ def init_keyboard_listener():
         "stop_recording": False,
     }
 
-    # Accept the single-byte letter equivalents n/r/q alongside the arrow/Esc keys: the
-    # letters are immune to the escape-sequence split/delay/interception that affects arrows
-    # over laggy SSH/VNC links. Case-insensitive so Shift+letter still works.
+    # The single-byte letter equivalents n/r/q are immune to the escape-sequence
+    # split/delay/interception that affects arrow keys over laggy SSH/VNC links, but they
+    # COLLIDE with any letter-driven teleoperator: mujoco_xarm7_keyboard uses q (joint1-)
+    # and r (joint4-), and mujoco_xarm7_tcp_keyboard uses q (TCP +Z) and r (rot +rx), so
+    # jogging the arm silently stopped the recording. Opt in with
+    # LEROBOT_EPISODE_LETTER_KEYS=1 when the teleop does not claim those letters.
+    letter_keys = os.environ.get("LEROBOT_EPISODE_LETTER_KEYS", "0").lower() in ("1", "true", "yes")
+    next_keys = ("right", "n") if letter_keys else ("right",)
+    rerec_keys = ("left", "r") if letter_keys else ("left",)
+    stop_keys = ("esc", "q") if letter_keys else ("esc",)
+
     def on_key(name: str) -> None:
         key = name.lower()
-        if key in ("right", "n"):
+        if key in next_keys:
             apply_recording_control("right", events)
-        elif key in ("left", "r"):
+        elif key in rerec_keys:
             apply_recording_control("left", events)
-        elif key in ("esc", "q"):
+        elif key in stop_keys:
             apply_recording_control("esc", events)
         # other keys (incl. up/down) are intentionally ignored
 
-    listener = create_key_listener(on_key, controls_help="Right/Left/Esc, or n=next, r=re-record, q=quit")
+    controls_help = (
+        "Right/Left/Esc, or n=next, r=re-record, q=quit"
+        if letter_keys
+        else "Right=next, Left=re-record, Esc=stop (letter aliases n/r/q disabled; "
+        "set LEROBOT_EPISODE_LETTER_KEYS=1 to enable)"
+    )
+    listener = create_key_listener(on_key, controls_help=controls_help)
     return listener, events
