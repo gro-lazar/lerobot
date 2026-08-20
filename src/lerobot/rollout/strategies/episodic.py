@@ -172,8 +172,16 @@ class EpisodicStrategy(RolloutStrategy):
                         # for policy eval. mujoco_xarm7.reset() re-seeds free-body object
                         # poses with per-episode randomization; without it every eval
                         # episode replays identical object placement.
-                        if robot.name in ("unitree_g1", "mujoco_xarm7"):
-                            robot.reset()
+                        # NOTE: rollout wraps the robot in ThreadSafeRobot, which proxies
+                        # only the Robot ABC and has no __getattr__ passthrough -- so
+                        # robot.reset() raises AttributeError here even though the same
+                        # call works in lerobot_record.py (unwrapped). Reach the wrapped
+                        # instance and guard on the method actually existing.
+                        _target = getattr(robot, "_robot", robot)
+                        if robot.name in ("unitree_g1", "mujoco_xarm7") and hasattr(
+                            _target, "reset"
+                        ):
+                            _target.reset()
 
                         self._reset_loop(
                             ctx=ctx,
