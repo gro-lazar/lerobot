@@ -63,6 +63,10 @@ class ActionQueue:
         self.lock = Lock()
         self.last_index = 0
         self.cfg = cfg
+        # Bumped on every clear(). An inference that started before a reset carries
+        # the old generation; merge() drops it so a chunk conditioned on the previous
+        # episode's final observation can never land in the fresh queue.
+        self.generation = 0
 
     def get(self) -> Tensor | None:
         """Get the next action from the queue.
@@ -85,6 +89,7 @@ class ActionQueue:
             self.queue = None
             self.original_queue = None
             self.last_index = 0
+            self.generation += 1
 
     def qsize(self) -> int:
         """Get the number of remaining actions in the queue.
@@ -116,6 +121,15 @@ class ActionQueue:
         """
         with self.lock:
             return self.last_index
+
+    def get_generation(self) -> int:
+        """Get the current queue generation (incremented by every ``clear()``).
+
+        Returns:
+            int: Generation token to pass back to ``merge`` as ``expected_generation``.
+        """
+        with self.lock:
+            return self.generation
 
     def get_left_over(self) -> Tensor | None:
         """Get leftover original actions for RTC prev_chunk_left_over.
@@ -150,6 +164,7 @@ class ActionQueue:
         processed_actions: Tensor,
         real_delay: int,
         action_index_before_inference: int | None = None,
+        expected_generation: int | None = None,
     ):
         """Merge new actions into the queue.
 
@@ -162,8 +177,19 @@ class ActionQueue:
             processed_actions: Post-processed actions for robot (time_steps, action_dim).
             real_delay: Number of time steps of inference delay.
             action_index_before_inference: Index before inference started, for validation.
+            expected_generation: Queue generation observed when inference started. If it
+                no longer matches, the queue was cleared mid-inference (episode boundary)
+                and this chunk is stale, so it is discarded instead of merged.
         """
         with self.lock:
+            if expected_generation is not None and expected_generation != self.generation:
+                logger.debug(
+                    "Discarding stale chunk from generation %d (queue is now at %d)",
+                    expected_generation,
+                    self.generation,
+                )
+                return
+
             delay = self._check_and_resolve_delays(real_delay, action_index_before_inference)
 
             if self.cfg.enabled:

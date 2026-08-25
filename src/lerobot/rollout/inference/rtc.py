@@ -242,6 +242,13 @@ class RTCInferenceEngine(InferenceEngine):
         self._postprocessor.reset()
         if self._action_queue is not None:
             self._action_queue.clear()
+        # Drop the last published observation too. Without this the thread can wake
+        # between resume() and the new episode's first notify_observation, start an
+        # inference on the previous episode's final frame, and produce a chunk that
+        # the generation guard considers legitimate. Clearing it makes the loop idle
+        # until the new episode publishes a real observation.
+        with self._obs_lock:
+            self._obs_holder["obs"] = None
 
     # ------------------------------------------------------------------
     # Action production (called from main thread)
@@ -289,6 +296,11 @@ class RTCInferenceEngine(InferenceEngine):
                     try:
                         current_time = time.perf_counter()
                         idx_before = queue.get_action_index()
+                        # Capture the queue generation with the rest of the pre-inference
+                        # state: if reset() clears the queue while this inference is in
+                        # flight, merge() drops the result instead of replacing the fresh
+                        # queue with a chunk conditioned on the previous episode.
+                        gen_before = queue.get_generation()
                         prev_actions = queue.get_left_over()
 
                         latency = latency_tracker.max()
@@ -339,7 +351,7 @@ class RTCInferenceEngine(InferenceEngine):
                         else:
                             latency_tracker.add(new_latency)
 
-                        queue.merge(original, processed, new_delay, idx_before)
+                        queue.merge(original, processed, new_delay, idx_before, expected_generation=gen_before)
 
                         if (
                             is_warmup

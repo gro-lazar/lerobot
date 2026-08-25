@@ -131,6 +131,15 @@ class EpisodicStrategy(RolloutStrategy):
                         single_task=single_task,
                     )
 
+                    # Park the inference thread for everything that is not the policy
+                    # loop. RTC runs inference in the background off the last observation
+                    # published by _process_observation_and_notify; that observation stops
+                    # updating once the episode ends, so an unpaused thread keeps emitting
+                    # chunks conditioned on this episode's final frame right through the
+                    # reset phase and into the next episode. resume() is called at the top
+                    # of the loop, after reset(). Non-RTC engines no-op both calls.
+                    self._engine.pause()
+
                     # Reset phase, skip after the last episode (but run when re-recording)
                     if not events["stop_recording"] and (
                         recorded_episodes < num_episodes - 1 or events["rerecord_episode"]
@@ -262,8 +271,15 @@ class EpisodicStrategy(RolloutStrategy):
             dt = time.perf_counter() - loop_start
             sleep_t = control_interval - dt
             if sleep_t < 0:
+                # Report the rate the loop is actually held to. With
+                # --interpolation_multiplier=M the loop issues M commands per policy
+                # action, so the budget per iteration is 1/(fps*M), NOT 1/fps --
+                # printing `fps` here produced the nonsensical "running slower
+                # (17.0 Hz) than the target FPS (10.0 Hz)".
+                target_hz = 1.0 / control_interval
                 logger.warning(
-                    f"Record loop is running slower ({1 / dt:.1f} Hz) than the target FPS ({fps} Hz). "
+                    f"Record loop is running slower ({1 / dt:.1f} Hz) than the target "
+                    f"command rate ({target_hz:.1f} Hz = {fps} fps x {interpolator.multiplier}). "
                     "Dataset frames might be dropped and robot control might be unstable. "
                     "Common causes are: 1) Camera FPS not keeping up 2) Policy inference taking too long "
                     "3) CPU starvation"
