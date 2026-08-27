@@ -74,6 +74,21 @@ class ActionInterpolator:
         """Check if a new action is needed from the queue."""
         return self._idx >= len(self._buffer)
 
+    @property
+    def at_policy_tick(self) -> bool:
+        """Whether the command last returned by `get()` was the first of a policy action.
+
+        Read this *after* `get()`: `add()` resets the index to 0 and `get()` advances
+        it, so index 1 means the tick just served is the one where a fresh policy
+        action entered the buffer. With `multiplier == 1` every tick is a policy tick,
+        which is what this returns.
+
+        Recording loops use it to write dataset frames at the policy rate instead of
+        the command rate — `obs_processed` is only refreshed on policy ticks, so the
+        interpolated ticks carry duplicate observations.
+        """
+        return self._idx == 1
+
     def add(self, action: Tensor) -> None:
         """Add a new action and compute interpolated sequence.
 

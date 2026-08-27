@@ -120,14 +120,17 @@ class SentryStrategy(RolloutStrategy):
 
                     if action_dict is not None:
                         self._log_telemetry(obs_processed, action_dict, ctx.runtime)
-                        obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
-                        action_frame = build_dataset_frame(features, action_dict, prefix=ACTION)
-                        frame = {**obs_frame, **action_frame, "task": task_str}
-                        # ``add_frame`` writes to the in-progress episode buffer; the
-                        # background pusher only ever touches *finalised* episode
-                        # artifacts on disk.  The two operate on disjoint state, so
-                        # ``add_frame`` does not need ``_episode_lock``.
-                        dataset.add_frame(frame)
+                        # Policy rate, not command rate — see the same guard in
+                        # ``EpisodicStrategy._policy_loop``.
+                        if interpolator.at_policy_tick:
+                            obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
+                            action_frame = build_dataset_frame(features, action_dict, prefix=ACTION)
+                            frame = {**obs_frame, **action_frame, "task": task_str}
+                            # ``add_frame`` writes to the in-progress episode buffer; the
+                            # background pusher only ever touches *finalised* episode
+                            # artifacts on disk.  The two operate on disjoint state, so
+                            # ``add_frame`` does not need ``_episode_lock``.
+                            dataset.add_frame(frame)
 
                     # Episode rotation derived from video file-size target.
                     # The duration is a conservative estimate so the actual

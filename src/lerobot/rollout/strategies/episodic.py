@@ -263,9 +263,18 @@ class EpisodicStrategy(RolloutStrategy):
             action_dict = send_next_action(obs_processed, obs, ctx, interpolator)
 
             if action_dict is not None:
-                obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
-                action_frame = build_dataset_frame(features, action_dict, prefix=ACTION)
-                dataset.add_frame({**obs_frame, **action_frame, "task": single_task})
+                # Record at the POLICY rate, not the command rate. With
+                # --interpolation_multiplier=M this loop issues M commands per policy
+                # action, but `_process_observation_and_notify` only refreshes
+                # `obs_processed` on the policy tick. Writing a frame every tick
+                # therefore stored M-1 duplicate observations per action and produced a
+                # dataset M x longer than `--dataset.fps` claims — replays and any
+                # velocity/jerk metric computed from it came out M x off. Same guard as
+                # DAgger's `record_tick % record_stride`.
+                if interpolator.at_policy_tick:
+                    obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
+                    action_frame = build_dataset_frame(features, action_dict, prefix=ACTION)
+                    dataset.add_frame({**obs_frame, **action_frame, "task": single_task})
                 self._log_telemetry(obs_processed, action_dict, ctx.runtime)
 
             dt = time.perf_counter() - loop_start

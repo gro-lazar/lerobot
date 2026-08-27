@@ -127,9 +127,16 @@ class HighlightStrategy(RolloutStrategy):
 
                     if action_dict is not None:
                         self._log_telemetry(obs_processed, action_dict, ctx.runtime)
-                        obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
-                        action_frame = build_dataset_frame(features, action_dict, prefix=ACTION)
-                        frame = {**obs_frame, **action_frame, "task": task_str}
+                        # Policy rate, not command rate — see the same guard in
+                        # ``EpisodicStrategy._policy_loop``. Only the frame is
+                        # throttled; the save/push key handling below still runs every
+                        # tick so a keypress is never delayed by up to `multiplier`
+                        # ticks. ``frame is None`` marks an interpolated tick.
+                        frame = None
+                        if interpolator.at_policy_tick:
+                            obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
+                            action_frame = build_dataset_frame(features, action_dict, prefix=ACTION)
+                            frame = {**obs_frame, **action_frame, "task": task_str}
 
                         # NOTE: ``is_set()`` then ``clear()`` is not atomic
                         # against the keyboard thread setting the flag again
@@ -146,7 +153,8 @@ class HighlightStrategy(RolloutStrategy):
                                     dataset.add_frame(buffered_frame)
                                 self._recording_live.set()
                             else:
-                                dataset.add_frame(frame)
+                                if frame is not None:
+                                    dataset.add_frame(frame)
                                 with self._episode_lock:
                                     dataset.save_episode()
                                 logger.info("Episode saved (total: %d)", dataset.num_episodes)
@@ -162,10 +170,11 @@ class HighlightStrategy(RolloutStrategy):
                             logger.info("Push requested by user")
                             self._background_push(dataset, cfg)
 
-                        if self._recording_live.is_set():
-                            dataset.add_frame(frame)
-                        else:
-                            ring.append(frame)
+                        if frame is not None:
+                            if self._recording_live.is_set():
+                                dataset.add_frame(frame)
+                            else:
+                                ring.append(frame)
 
                     dt = time.perf_counter() - loop_start
                     if (sleep_t := control_interval - dt) > 0:
